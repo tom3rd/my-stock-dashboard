@@ -22,22 +22,22 @@ os.environ['PYTHONHTTPSVERIFY'] = '0'
 
 st.set_page_config(page_title="AX Stock App", layout="wide", initial_sidebar_state="collapsed")
 
-# 토스증권 스타일 모바일 CSS
+# 모바일 전용 토스 UX CSS (좌우 스크롤 칩 및 버튼 스타일)
 st.markdown("""
     <style>
         .block-container { padding-top: 0.8rem !important; padding-bottom: 2.0rem; padding-left: 0.8rem; padding-right: 0.8rem; }
-        .stTabs [data-baseweb="tab-list"] { gap: 8px; overflow-x: auto; white-space: nowrap; }
-        .stTabs [data-baseweb="tab"] {
-            padding: 6px 14px !important;
-            border-radius: 16px !important;
-            background-color: #F2F4F6 !important;
-            font-weight: 600 !important;
-            font-size: 0.85rem !important;
+        
+        /* 모바일 터치 슬라이드 칩 컨테이너 */
+        .scroll-chips-container {
+            display: flex;
+            overflow-x: auto;
+            white-space: nowrap;
+            gap: 8px;
+            padding-bottom: 8px;
+            -webkit-overflow-scrolling: touch;
         }
-        .stTabs [aria-selected="true"] {
-            background-color: #3182F6 !important;
-            color: white !important;
-        }
+        .scroll-chips-container::-webkit-scrollbar { display: none; }
+        
         .price-large { font-size: 2.2rem; font-weight: 800; margin-bottom: 2px; line-height: 1.1; }
         .diff-red { color: #F04452; font-weight: 700; font-size: 1.05rem; }
         .diff-blue { color: #3182F6; font-weight: 700; font-size: 1.05rem; }
@@ -51,7 +51,7 @@ kst = pytz.timezone('Asia/Seoul')
 now_kst = datetime.datetime.now(kst)
 today_str = now_kst.strftime("%Y-%m-%d")
 
-# --- 텔레그램 전송 ---
+# 텔레그램 알림
 def send_telegram_msg(message):
     token = os.getenv("TELEGRAM_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -63,7 +63,7 @@ def send_telegram_msg(message):
         except Exception:
             pass
 
-# --- API 연동 ---
+# API 연동
 app_key = os.getenv("KIS_APP_KEY", "").strip()
 app_secret = os.getenv("KIS_APP_SECRET", "").strip()
 URL_BASE = "https://openapi.koreainvestment.com:9443"
@@ -121,7 +121,7 @@ def get_kis_stock_daily_real(code, key, secret, token):
     except Exception as e:
         return False, None, str(e)
 
-# --- 세션 초기화 ---
+# 세션 관리
 if "interest_stocks" not in st.session_state:
     st.session_state.interest_stocks = {
         "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740",
@@ -131,10 +131,12 @@ if "interest_stocks" not in st.session_state:
 if "display_stocks" not in st.session_state:
     st.session_state.display_stocks = ["삼성전자", "SK하이닉스", "한화엔진", "삼양식품", "에코프로", "현대차"]
 
+if "active_stock" not in st.session_state:
+    st.session_state.active_stock = "삼성전자"
+
 if "alert_sent" not in st.session_state:
     st.session_state.alert_sent = {}
 
-# 종목 추가 전용 공통 함수
 def add_target_stock(name, code):
     name = name.strip()
     code = code.strip()
@@ -142,40 +144,35 @@ def add_target_stock(name, code):
         st.session_state.interest_stocks[name] = code
         if name not in st.session_state.display_stocks:
             st.session_state.display_stocks.append(name)
-            st.toast(f"✅ '{name}' 종목 탭이 추가되었습니다!", icon="🎉")
-        else:
-            st.toast(f"ℹ️ '{name}' 종목은 이미 탭에 존재합니다.", icon="💡")
+        st.session_state.active_stock = name
+        st.toast(f"✅ '{name}' 종목이 추가되었습니다!", icon="🎉")
 
 is_auth_ok, token, auth_msg = get_access_token_cached(app_key, app_secret)
 
 # --- 사이드바 ---
-st.sidebar.header("🔍 종목 추가 및 관리")
+st.sidebar.header("🔍 종목 검색 & 추가")
 search_query = st.sidebar.text_input("종목명 또는 6자리 코드 입력")
 
+fallback_db = {
+    "고영": "053670", "카카오": "035720", "네이버": "035420", "NAVER": "035420",
+    "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740", "삼양식품": "003230",
+    "에코프로": "086520", "현대차": "005380", "기아": "000270", "알테오젠": "196170",
+    "카카오뱅크": "323410", "크래프톤": "259960", "셀트리온": "068270", "POSCO홀딩스": "005490"
+}
+
 if search_query:
-    fallback_db = {
-        "고영": "053670", "카카오": "035720", "네이버": "035420", "NAVER": "035420",
-        "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740", "삼양식품": "003230",
-        "에코프로": "086520", "현대차": "005380", "기아": "000270", "알테오젠": "196170",
-        "카카오뱅크": "323410", "크래프톤": "259960", "셀트리온": "068270", "POSCO홀딩스": "005490"
-    }
     matches = [(k, v) for k, v in fallback_db.items() if search_query.upper() in k.upper() or search_query in v]
-    
     if matches:
         for r_name, r_code in matches:
-            col_s1, col_s2 = st.sidebar.columns([3, 1])
-            col_s1.write(f"{r_name} ({r_code})")
-            if col_s2.button("➕", key=f"side_add_{r_code}"):
+            c1, c2 = st.sidebar.columns([3, 1])
+            c1.write(f"{r_name} ({r_code})")
+            if c2.button("➕ 추가", key=f"side_add_{r_code}"):
                 add_target_stock(r_name, r_code)
                 st.rerun()
-    else:
-        # DB에 없어도 코드(6자리) 직접 등록 허용
-        if len(search_query) == 6 and search_query.isdigit():
-            if st.sidebar.button(f"➕ 코드 '{search_query}' 직접 추가", key="add_custom_code"):
-                add_target_stock(f"종목_{search_query}", search_query)
-                st.rerun()
-        else:
-            st.sidebar.info("검색 결과가 없습니다. 6자리 코드를 입력하면 직접 추가가 가능합니다.")
+    elif len(search_query) == 6 and search_query.isdigit():
+        if st.sidebar.button(f"➕ 코드 '{search_query}' 직접 추가", key="add_custom_code"):
+            add_target_stock(f"종목_{search_query}", search_query)
+            st.rerun()
 
 st.sidebar.divider()
 strategy = st.sidebar.selectbox("📊 차트 분석 기법", ["tom3rd (정밀 모멘텀)", "이동평균선 (MA Cross)", "RSI 과매도/과매수", "볼린저 밴드"])
@@ -187,136 +184,150 @@ if st.sidebar.button("🔔 텔레그램 연동 테스트"):
 # --- 메인 화면 ---
 if not app_key or not app_secret or not is_auth_ok:
     st.error("🔑 한투 API 연동 상태를 확인해 주세요.")
+elif not st.session_state.display_stocks:
+    st.info("👈 사이드바 메뉴에서 관심 종목을 추가해 주세요.")
 else:
-    if not st.session_state.display_stocks:
-        st.info("👈 사이드바 메뉴에서 관심 종목을 추가해 주세요.")
+    # 1. 모바일 터치 좌우 스크롤 칩 선택 바
+    st.write("**📱 종목 선택 (손가락으로 좌우 스크롤)**")
+    
+    # 칩 버튼 열 생성 (수평 스크롤 지원)
+    chip_cols = st.columns(len(st.session_state.display_stocks))
+    for idx, s_name in enumerate(st.session_state.display_stocks):
+        btn_type = "primary" if s_name == st.session_state.active_stock else "secondary"
+        if chip_cols[idx].button(s_name, key=f"chip_{idx}_{s_name}", type=btn_type):
+            st.session_state.active_stock = s_name
+            st.rerun()
+
+    st.divider()
+
+    # 2. 선택된 종목 상세 정보 카드 렌더링
+    stock_name = st.session_state.active_stock
+    if stock_name not in st.session_state.interest_stocks:
+        stock_name = st.session_state.display_stocks[0]
+        st.session_state.active_stock = stock_name
+
+    code = st.session_state.interest_stocks[stock_name]
+    is_data_ok, df, data_msg = get_kis_stock_daily_real(code, app_key, app_secret, token)
+
+    if not is_data_ok or df is None or df.empty:
+        st.error(f"[{stock_name}] 데이터 로드 실패: {data_msg}")
     else:
-        # 상단 종목 이동 탭
-        tabs = st.tabs(st.session_state.display_stocks)
+        # 지표 계산
+        df['Buy_Signal'] = np.nan
+        df['Sell_Signal'] = np.nan
+        df['MA5'] = df['Close'].rolling(window=5).mean()
+        df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['MA50'] = df['Close'].rolling(window=50).mean()
 
-        for i, stock_name in enumerate(st.session_state.display_stocks):
-            with tabs[i]:
-                code = st.session_state.interest_stocks[stock_name]
-                is_data_ok, df, data_msg = get_kis_stock_daily_real(code, app_key, app_secret, token)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
 
-                if not is_data_ok or df is None or df.empty:
-                    st.error(f"데이터 로드 실패: {data_msg}")
-                    continue
+        df['STD20'] = df['Close'].rolling(window=20).std()
+        df['Upper'] = df['MA20'] + (df['STD20'] * 2)
+        df['Lower'] = df['MA20'] - (df['STD20'] * 2)
 
-                # 지표 및 신호 계산
-                df['Buy_Signal'] = np.nan
-                df['Sell_Signal'] = np.nan
-                df['MA5'] = df['Close'].rolling(window=5).mean()
-                df['MA20'] = df['Close'].rolling(window=20).mean()
-                df['MA50'] = df['Close'].rolling(window=50).mean()
+        if strategy == "이동평균선 (MA Cross)":
+            buy_cond = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1))
+            sell_cond = (df['MA5'] < df['MA20']) & (df['MA5'].shift(1) >= df['MA20'].shift(1))
+        elif strategy == "RSI 과매도/과매수":
+            buy_cond = df['RSI'] < 30
+            sell_cond = df['RSI'] > 70
+        elif strategy == "볼린저 밴드":
+            buy_cond = df['Close'] <= df['Lower']
+            sell_cond = df['Close'] >= df['Upper']
+        else:  # tom3rd
+            buy_cond = (df['Close'] > df['MA50']) & (df['RSI'] < 45)
+            sell_cond = (df['Close'] < df['MA50']) & (df['RSI'] > 60)
 
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                df['RSI'] = 100 - (100 / (1 + rs))
+        df.loc[buy_cond, 'Buy_Signal'] = df['Low'] * 0.98
+        df.loc[sell_cond, 'Sell_Signal'] = df['High'] * 1.02
 
-                df['STD20'] = df['Close'].rolling(window=20).std()
-                df['Upper'] = df['MA20'] + (df['STD20'] * 2)
-                df['Lower'] = df['MA20'] - (df['STD20'] * 2)
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        diff_price = latest['Close'] - prev['Close']
+        diff_rate = (diff_price / prev['Close']) * 100
+        latest_date = latest.name.strftime("%Y-%m-%d")
 
-                if strategy == "이동평균선 (MA Cross)":
-                    buy_cond = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1))
-                    sell_cond = (df['MA5'] < df['MA20']) & (df['MA5'].shift(1) >= df['MA20'].shift(1))
-                elif strategy == "RSI 과매도/과매수":
-                    buy_cond = df['RSI'] < 30
-                    sell_cond = df['RSI'] > 70
-                elif strategy == "볼린저 밴드":
-                    buy_cond = df['Close'] <= df['Lower']
-                    sell_cond = df['Close'] >= df['Upper']
-                else:  # tom3rd
-                    buy_cond = (df['Close'] > df['MA50']) & (df['RSI'] < 45)
-                    sell_cond = (df['Close'] < df['MA50']) & (df['RSI'] > 60)
+        # 텔레그램 알림 발송
+        alert_key = f"{code}_{latest_date}_{strategy}"
+        if alert_key not in st.session_state.alert_sent:
+            if pd.notna(latest['Buy_Signal']):
+                send_telegram_msg(f"🟢 *[매수 신호]* {stock_name} ({int(latest['Close']):,}원)")
+                st.session_state.alert_sent[alert_key] = "BUY"
+            elif pd.notna(latest['Sell_Signal']):
+                send_telegram_msg(f"🔴 *[손절 신호]* {stock_name} ({int(latest['Close']):,}원)")
+                st.session_state.alert_sent[alert_key] = "SELL"
 
-                df.loc[buy_cond, 'Buy_Signal'] = df['Low'] * 0.98
-                df.loc[sell_cond, 'Sell_Signal'] = df['High'] * 1.02
+        # --- 토스 스타일 주가 헤더 ---
+        c_title, c_del = st.columns([5, 1])
+        c_title.markdown(f"### **{stock_name}** `{code}`")
+        if c_del.button("삭제", key=f"del_{code}"):
+            st.session_state.display_stocks.remove(stock_name)
+            if st.session_state.display_stocks:
+                st.session_state.active_stock = st.session_state.display_stocks[0]
+            st.rerun()
 
-                latest = df.iloc[-1]
-                prev = df.iloc[-2]
-                diff_price = latest['Close'] - prev['Close']
-                diff_rate = (diff_price / prev['Close']) * 100
-                latest_date = latest.name.strftime("%Y-%m-%d")
+        st.markdown(f"<div class='price-large'>{int(latest['Close']):,}원</div>", unsafe_allow_html=True)
 
-                # 텔레그램 알림 체크
-                alert_key = f"{code}_{latest_date}_{strategy}"
-                if alert_key not in st.session_state.alert_sent:
-                    if pd.notna(latest['Buy_Signal']):
-                        send_telegram_msg(f"🟢 *[매수 신호]* {stock_name} ({int(latest['Close']):,}원)")
-                        st.session_state.alert_sent[alert_key] = "BUY"
-                    elif pd.notna(latest['Sell_Signal']):
-                        send_telegram_msg(f"🔴 *[손절 신호]* {stock_name} ({int(latest['Close']):,}원)")
-                        st.session_state.alert_sent[alert_key] = "SELL"
+        if diff_price >= 0:
+            st.markdown(f"<div class='diff-red'>어제보다 +{int(diff_price):,}원 (+{diff_rate:.2f}%)</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='diff-blue'>어제보다 {int(diff_price):,}원 ({diff_rate:.2f}%)</div>", unsafe_allow_html=True)
 
-                # --- 토스 스타일 타이틀 & 현재가 헤더 ---
-                c_title, c_del = st.columns([5, 1])
-                c_title.markdown(f"**{stock_name}** `{code}`")
-                if c_del.button("삭제", key=f"toss_del_{code}"):
-                    st.session_state.display_stocks.remove(stock_name)
-                    st.rerun()
+        st.write("")
+        
+        if pd.notna(latest['Buy_Signal']):
+            st.markdown("<span class='signal-badge-buy'>🟢 AI 매수 타점 포착</span>", unsafe_allow_html=True)
+        elif pd.notna(latest['Sell_Signal']):
+            st.markdown("<span class='signal-badge-sell'>🔴 AI 손절/축소 타점 포착</span>", unsafe_allow_html=True)
+        else:
+            st.markdown("<span class='signal-badge-hold'>⚪ AI 관망 유지 구간</span>", unsafe_allow_html=True)
 
-                st.markdown(f"<div class='price-large'>{int(latest['Close']):,}원</div>", unsafe_allow_html=True)
+        st.write("")
 
-                if diff_price >= 0:
-                    st.markdown(f"<div class='diff-red'>어제보다 +{int(diff_price):,}원 (+{diff_rate:.2f}%)</div>", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"<div class='diff-blue'>어제보다 {int(diff_price):,}원 ({diff_rate:.2f}%)</div>", unsafe_allow_html=True)
+        # --- 토스 스타일 차트 ---
+        max_price = df['High'].max()
+        min_price = df['Low'].min()
 
-                st.write("")
-                
-                if pd.notna(latest['Buy_Signal']):
-                    st.markdown("<span class='signal-badge-buy'>🟢 AI 매수 타점 포착</span>", unsafe_allow_html=True)
-                elif pd.notna(latest['Sell_Signal']):
-                    st.markdown("<span class='signal-badge-sell'>🔴 AI 손절/축소 타점 포착</span>", unsafe_allow_html=True)
-                else:
-                    st.markdown("<span class='signal-badge-hold'>⚪ AI 관망 유지 구간</span>", unsafe_allow_html=True)
+        fig = go.Figure()
+        line_color = '#F04452' if diff_price >= 0 else '#3182F6'
 
-                st.write("")
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['Close'],
+            mode='lines',
+            line=dict(color=line_color, width=2.5),
+            name="종가"
+        ))
 
-                # --- 라인 차트 ---
-                max_price = df['High'].max()
-                min_price = df['Low'].min()
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['Buy_Signal'], mode='markers',
+            marker=dict(symbol='circle', size=10, color='#F04452'), name='매수'
+        ))
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['Sell_Signal'], mode='markers',
+            marker=dict(symbol='circle', size=10, color='#3182F6'), name='매도'
+        ))
 
-                fig = go.Figure()
+        fig.add_annotation(
+            x=df['High'].idxmax(), y=max_price,
+            text=f"최고 {int(max_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#F04452", font=dict(color="#F04452", size=10)
+        )
+        fig.add_annotation(
+            x=df['Low'].idxmin(), y=min_price,
+            text=f"최저 {int(min_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#3182F6", font=dict(color="#3182F6", size=10), ay=25
+        )
 
-                line_color = '#F04452' if diff_price >= 0 else '#3182F6'
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=df['Close'],
-                    mode='lines',
-                    line=dict(color=line_color, width=2.5),
-                    name="종가"
-                ))
+        fig.update_layout(
+            xaxis_rangeslider_visible=False,
+            height=340,
+            margin=dict(l=5, r=5, t=10, b=5),
+            template="plotly_white",
+            showlegend=False,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor='#F2F4F6')
+        )
 
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=df['Buy_Signal'], mode='markers',
-                    marker=dict(symbol='circle', size=10, color='#F04452'), name='매수'
-                ))
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=df['Sell_Signal'], mode='markers',
-                    marker=dict(symbol='circle', size=10, color='#3182F6'), name='매도'
-                ))
-
-                fig.add_annotation(
-                    x=df['High'].idxmax(), y=max_price,
-                    text=f"최고 {int(max_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#F04452", font=dict(color="#F04452", size=10)
-                )
-                fig.add_annotation(
-                    x=df['Low'].idxmin(), y=min_price,
-                    text=f"최저 {int(min_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#3182F6", font=dict(color="#3182F6", size=10), ay=25
-                )
-
-                fig.update_layout(
-                    xaxis_rangeslider_visible=False,
-                    height=340,
-                    margin=dict(l=5, r=5, t=10, b=5),
-                    template="plotly_white",
-                    showlegend=False,
-                    xaxis=dict(showgrid=False),
-                    yaxis=dict(showgrid=True, gridcolor='#F2F4F6')
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
