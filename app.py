@@ -6,7 +6,6 @@ import json
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import datetime
 import pytz
 import urllib3
@@ -21,16 +20,30 @@ ssl._create_default_https_context = ssl._create_unverified_context
 os.environ['CURL_CA_BUNDLE'] = ''
 os.environ['PYTHONHTTPSVERIFY'] = '0'
 
-st.set_page_config(page_title="AX Stock Mobile", layout="wide")
+st.set_page_config(page_title="AX Stock App", layout="wide", initial_sidebar_state="collapsed")
 
+# 토스증권 스타일 모바일 CSS
 st.markdown("""
     <style>
-        .block-container { padding-top: 1.0rem !important; padding-bottom: 2.0rem; padding-left: 0.5rem; padding-right: 0.5rem; }
-        h3 { font-size: 1.1rem !important; margin-bottom: 0.2rem !important; }
-        div[data-testid="stMetricValue"] { font-size: 0.95rem !important; font-weight: bold; }
-        div[data-testid="stMetricLabel"] { font-size: 0.75rem !important; }
-        .stButton button { padding: 4px 10px !important; font-size: 0.85rem !important; width: 100%; }
-        .stock-card { background-color: #f8f9fa; border-radius: 8px; padding: 10px; margin-bottom: 15px; }
+        .block-container { padding-top: 0.8rem !important; padding-bottom: 2.0rem; padding-left: 0.8rem; padding-right: 0.8rem; }
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab"] {
+            padding: 6px 16px !important;
+            border-radius: 16px !important;
+            background-color: #F2F4F6 !important;
+            font-weight: 600 !important;
+            font-size: 0.9rem !important;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #3182F6 !important;
+            color: white !important;
+        }
+        .price-large { font-size: 2.2rem; font-weight: 800; margin-bottom: 2px; line-height: 1.1; }
+        .diff-red { color: #F04452; font-weight: 700; font-size: 1.05rem; }
+        .diff-blue { color: #3182F6; font-weight: 700; font-size: 1.05rem; }
+        .signal-badge-buy { background-color: #FFF0F1; color: #F04452; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }
+        .signal-badge-sell { background-color: #E8F3FF; color: #3182F6; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }
+        .signal-badge-hold { background-color: #F2F4F6; color: #8B95A1; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -38,12 +51,7 @@ kst = pytz.timezone('Asia/Seoul')
 now_kst = datetime.datetime.now(kst)
 today_str = now_kst.strftime("%Y-%m-%d")
 
-is_weekday = now_kst.weekday() < 5
-start_time = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
-end_time = now_kst.replace(hour=15, minute=30, second=0, microsecond=0)
-is_market_open = is_weekday and (start_time <= now_kst <= end_time)
-
-# --- 1. 텔레그램 전송 함수 ---
+# --- 텔레그램 전송 ---
 def send_telegram_msg(message):
     token = os.getenv("TELEGRAM_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -55,12 +63,7 @@ def send_telegram_msg(message):
         except Exception:
             pass
 
-# --- 2. 헤더 ---
-status_badge = "🟢 **LIVE**" if is_market_open else "⚪ **장 마감**"
-st.markdown(f"### 📈 AX Stock ({today_str}) | {status_badge}")
-st.divider()
-
-# --- 3. API 연결 ---
+# --- API 연동 ---
 app_key = os.getenv("KIS_APP_KEY", "").strip()
 app_secret = os.getenv("KIS_APP_SECRET", "").strip()
 URL_BASE = "https://openapi.koreainvestment.com:9443"
@@ -118,7 +121,7 @@ def get_kis_stock_daily_real(code, key, secret, token):
     except Exception as e:
         return False, None, str(e)
 
-# --- 4. 세션 관리 ---
+# --- 세션 관리 ---
 if "interest_stocks" not in st.session_state:
     st.session_state.interest_stocks = {
         "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740",
@@ -133,9 +136,9 @@ if "alert_sent" not in st.session_state:
 
 is_auth_ok, token, auth_msg = get_access_token_cached(app_key, app_secret)
 
-# --- 5. 사이드바 ---
-st.sidebar.header("🔍 종목 검색 & 관리")
-search_query = st.sidebar.text_input("종목명 또는 코드 입력")
+# --- 사이드바 ---
+st.sidebar.header("🔍 종목 추가 및 관리")
+search_query = st.sidebar.text_input("종목명/코드 입력")
 
 if search_query:
     fallback_db = {
@@ -149,121 +152,155 @@ if search_query:
         col_s1.write(f"{r_name} ({r_code})")
         if col_s2.button("➕", key=f"add_{r_code}"):
             st.session_state.interest_stocks[r_name] = r_code
-            if r_name not in st.session_state.display_stocks and len(st.session_state.display_stocks) < 6:
+            if r_name not in st.session_state.display_stocks:
                 st.session_state.display_stocks.append(r_name)
             st.rerun()
 
 st.sidebar.divider()
 strategy = st.sidebar.selectbox("📊 차트 분석 기법", ["tom3rd (정밀 모멘텀)", "이동평균선 (MA Cross)", "RSI 과매도/과매수", "볼린저 밴드"])
 
-# 테스트용 텔레그램 알림 버튼
 if st.sidebar.button("🔔 텔레그램 연동 테스트"):
-    send_telegram_msg("🚨 [AX Stock Test] 텔레그램 알림 연동이 정상 완료되었습니다!")
-    st.sidebar.success("테스트 메시지를 발송했습니다!")
+    send_telegram_msg("🚨 [AX Stock] 텔레그램 테스트 메시지입니다.")
+    st.sidebar.success("발송 완료!")
 
-# --- 6. 대시보드 ---
-if not app_key or not app_secret:
-    st.error("⚠️ KIS_APP_KEY 설정 필요")
-elif not is_auth_ok:
-    st.error(f"🔑 실전 API 인증 실패: {auth_msg}")
+# --- 메인 화면 (토스증권 UI 스타일) ---
+if not app_key or not app_secret or not is_auth_ok:
+    st.error("🔑 한투 API 연동 상태를 확인해 주세요.")
 else:
     if not st.session_state.display_stocks:
-        st.info("👈 왼쪽 상단 메뉴에서 화면 표시 종목을 추가해 주세요.")
+        st.info("👈 사이드바 메뉴에서 관심 종목을 추가해 주세요.")
     else:
-        for stock_name in list(st.session_state.display_stocks):
-            code = st.session_state.interest_stocks[stock_name]
-            is_data_ok, df, data_msg = get_kis_stock_daily_real(code, app_key, app_secret, token)
-            
-            col_t1, col_t2 = st.columns([4, 1])
-            col_t1.markdown(f"#### 📌 {stock_name} (`{code}`)")
-            if col_t2.button("❌", key=f"mob_del_{code}"):
-                st.session_state.display_stocks.remove(stock_name)
-                st.rerun()
+        # 상단 종목 이동 탭 (토스 스타일)
+        tabs = st.tabs(st.session_state.display_stocks)
 
-            if not is_data_ok or df is None or df.empty:
-                st.error(f"데이터 로드 실패: {data_msg}")
-                continue
+        for i, stock_name in enumerate(st.session_state.display_stocks):
+            with tabs[i]:
+                code = st.session_state.interest_stocks[stock_name]
+                is_data_ok, df, data_msg = get_kis_stock_daily_real(code, app_key, app_secret, token)
 
-            df['Buy_Signal'] = np.nan
-            df['Sell_Signal'] = np.nan
-            df['MA5'] = df['Close'].rolling(window=5).mean()
-            df['MA20'] = df['Close'].rolling(window=20).mean()
-            df['MA50'] = df['Close'].rolling(window=50).mean()
-            
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            df['RSI'] = 100 - (100 / (1 + rs))
+                if not is_data_ok or df is None or df.empty:
+                    st.error(f"데이터 로드 실패: {data_msg}")
+                    continue
 
-            df['STD20'] = df['Close'].rolling(window=20).std()
-            df['Upper'] = df['MA20'] + (df['STD20'] * 2)
-            df['Lower'] = df['MA20'] - (df['STD20'] * 2)
+                # 지표 및 신호 계산
+                df['Buy_Signal'] = np.nan
+                df['Sell_Signal'] = np.nan
+                df['MA5'] = df['Close'].rolling(window=5).mean()
+                df['MA20'] = df['Close'].rolling(window=20).mean()
+                df['MA50'] = df['Close'].rolling(window=50).mean()
 
-            if strategy == "이동평균선 (MA Cross)":
-                buy_cond = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1))
-                sell_cond = (df['MA5'] < df['MA20']) & (df['MA5'].shift(1) >= df['MA20'].shift(1))
-            elif strategy == "RSI 과매도/과매수":
-                buy_cond = df['RSI'] < 30
-                sell_cond = df['RSI'] > 70
-            elif strategy == "볼린저 밴드":
-                buy_cond = df['Close'] <= df['Lower']
-                sell_cond = df['Close'] >= df['Upper']
-            else:  # tom3rd
-                buy_cond = (df['Close'] > df['MA50']) & (df['RSI'] < 45)
-                sell_cond = (df['Close'] < df['MA50']) & (df['RSI'] > 60)
+                delta = df['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rs = gain / loss
+                df['RSI'] = 100 - (100 / (1 + rs))
 
-            df.loc[buy_cond, 'Buy_Signal'] = df['Low'] * 0.98
-            df.loc[sell_cond, 'Sell_Signal'] = df['High'] * 1.02
+                df['STD20'] = df['Close'].rolling(window=20).std()
+                df['Upper'] = df['MA20'] + (df['STD20'] * 2)
+                df['Lower'] = df['MA20'] - (df['STD20'] * 2)
 
-            latest = df.iloc[-1]
-            latest_date = latest.name.strftime("%Y-%m-%d")
-            
-            # --- 실시간 텔레그램 알림 발송 조건 판단 ---
-            alert_key = f"{code}_{latest_date}_{strategy}"
-            if alert_key not in st.session_state.alert_sent:
+                if strategy == "이동평균선 (MA Cross)":
+                    buy_cond = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1))
+                    sell_cond = (df['MA5'] < df['MA20']) & (df['MA5'].shift(1) >= df['MA20'].shift(1))
+                elif strategy == "RSI 과매도/과매수":
+                    buy_cond = df['RSI'] < 30
+                    sell_cond = df['RSI'] > 70
+                elif strategy == "볼린저 밴드":
+                    buy_cond = df['Close'] <= df['Lower']
+                    sell_cond = df['Close'] >= df['Upper']
+                else:  # tom3rd
+                    buy_cond = (df['Close'] > df['MA50']) & (df['RSI'] < 45)
+                    sell_cond = (df['Close'] < df['MA50']) & (df['RSI'] > 60)
+
+                df.loc[buy_cond, 'Buy_Signal'] = df['Low'] * 0.98
+                df.loc[sell_cond, 'Sell_Signal'] = df['High'] * 1.02
+
+                latest = df.iloc[-1]
+                prev = df.iloc[-2]
+                diff_price = latest['Close'] - prev['Close']
+                diff_rate = (diff_price / prev['Close']) * 100
+                latest_date = latest.name.strftime("%Y-%m-%d")
+
+                # 텔레그램 알림 체크
+                alert_key = f"{code}_{latest_date}_{strategy}"
+                if alert_key not in st.session_state.alert_sent:
+                    if pd.notna(latest['Buy_Signal']):
+                        send_telegram_msg(f"🟢 *[매수 신호]* {stock_name} ({int(latest['Close']):,}원)")
+                        st.session_state.alert_sent[alert_key] = "BUY"
+                    elif pd.notna(latest['Sell_Signal']):
+                        send_telegram_msg(f"🔴 *[손절 신호]* {stock_name} ({int(latest['Close']):,}원)")
+                        st.session_state.alert_sent[alert_key] = "SELL"
+
+                # --- 1. 토스 스타일 타이틀 & 현재가 헤더 ---
+                c_title, c_del = st.columns([5, 1])
+                c_title.markdown(f"**{stock_name}** `{code}`")
+                if c_del.button("삭제", key=f"toss_del_{code}"):
+                    st.session_state.display_stocks.remove(stock_name)
+                    st.rerun()
+
+                st.markdown(f"<div class='price-large'>{int(latest['Close']):,}원</div>", unsafe_allow_html=True)
+
+                # 전일 대비 변동금액 / 등락률
+                if diff_price >= 0:
+                    st.markdown(f"<div class='diff-red'>어제보다 +{int(diff_price):,}원 (+{diff_rate:.2f}%)</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='diff-blue'>어제보다 {int(diff_price):,}원 ({diff_rate:.2f}%)</div>", unsafe_allow_html=True)
+
+                st.write("")
+                
+                # 매매 신호 배지
                 if pd.notna(latest['Buy_Signal']):
-                    msg = f"🟢 *[매수 신호 포착]*\n• 종목: {stock_name} ({code})\n• 현재가: {int(latest['Close']):,}원\n• 전략: {strategy}\n• 날짜: {latest_date}"
-                    send_telegram_msg(msg)
-                    st.session_state.alert_sent[alert_key] = "BUY"
+                    st.markdown("<span class='signal-badge-buy'>🟢 AI 매수 타점 포착</span>", unsafe_allow_html=True)
                 elif pd.notna(latest['Sell_Signal']):
-                    msg = f"🔴 *[손절/축소 신호 포착]*\n• 종목: {stock_name} ({code})\n• 현재가: {int(latest['Close']):,}원\n• 전략: {strategy}\n• 날짜: {latest_date}"
-                    send_telegram_msg(msg)
-                    st.session_state.alert_sent[alert_key] = "SELL"
+                    st.markdown("<span class='signal-badge-sell'>🔴 AI 손절/축소 타점 포착</span>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<span class='signal-badge-hold'>⚪ AI 관망 유지 구간</span>", unsafe_allow_html=True)
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("현재가", f"{int(latest['Close']):,}원")
-            m2.metric("RSI", f"{latest['RSI']:.1f}" if pd.notna(latest['RSI']) else "-")
-            
-            if pd.notna(latest['Buy_Signal']):
-                m3.markdown("🟢 **매수**")
-            elif pd.notna(latest['Sell_Signal']):
-                m3.markdown("🔴 **손절/축소**")
-            else:
-                m3.markdown("⚪ **관망**")
+                st.write("")
 
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="주가"), row=1, col=1)
-            
-            if strategy == "이동평균선 (MA Cross)":
-                fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='orange', width=1), name='5일'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='blue', width=1), name='20일'), row=1, col=1)
-            elif strategy == "볼린저 밴드":
-                fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='gray', dash='dash'), name='상단'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='gray', dash='dash'), name='하단'), row=1, col=1)
-            else:
-                fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='#00A8FF', width=1), name='50일'), row=1, col=1)
+                # --- 2. 라인 / 캔들 차트 (토스 스타일) ---
+                max_price = df['High'].max()
+                min_price = df['Low'].min()
 
-            fig.add_trace(go.Scatter(x=df.index, y=df['Buy_Signal'], mode='markers', marker=dict(symbol='triangle-up', size=8, color='green'), name='매수'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['Sell_Signal'], mode='markers', marker=dict(symbol='triangle-down', size=8, color='red'), name='손절'), row=1, col=1)
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name="거래량", marker_color='lightblue'), row=2, col=1)
+                fig = go.Figure()
 
-            fig.update_layout(
-                xaxis_rangeslider_visible=False,
-                height=280,
-                margin=dict(l=2, r=2, t=5, b=2),
-                template="plotly_white",
-                showlegend=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.divider()
+                # 주가 추세 라인
+                line_color = '#F04452' if diff_price >= 0 else '#3182F6'
+                fig.add_trace(go.Scatter(
+                    x=df.index, y=df['Close'],
+                    mode='lines',
+                    line=dict(color=line_color, width=2.5),
+                    name="종가"
+                ))
+
+                # 매수/매도 타점 마커
+                fig.add_trace(go.Scatter(
+                    x=df.index, y=df['Buy_Signal'], mode='markers',
+                    marker=dict(symbol='circle', size=10, color='#F04452'), name='매수'
+                ))
+                fig.add_trace(go.Scatter(
+                    x=df.index, y=df['Sell_Signal'], mode='markers',
+                    marker=dict(symbol='circle', size=10, color='#3182F6'), name='매도'
+                ))
+
+                # 최고가/최저가 텍스트 주석
+                fig.add_annotation(
+                    x=df['High'].idxmax(), y=max_price,
+                    text=f"최고 {int(max_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#F04452", font=dict(color="#F04452", size=10)
+                )
+                fig.add_annotation(
+                    x=df['Low'].idxmin(), y=min_price,
+                    text=f"최저 {int(min_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#3182F6", font=dict(color="#3182F6", size=10), ay=25
+                )
+
+                fig.update_layout(
+                    xaxis_rangeslider_visible=False,
+                    height=340,
+                    margin=dict(l=5, r=5, t=10, b=5),
+                    template="plotly_white",
+                    showlegend=False,
+                    xaxis=dict(showgrid=False),
+                    yaxis=dict(showgrid=True, gridcolor='#F2F4F6')
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
