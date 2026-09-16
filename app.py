@@ -23,7 +23,6 @@ os.environ['PYTHONHTTPSVERIFY'] = '0'
 
 st.set_page_config(page_title="AX Stock Mobile", layout="wide")
 
-# 모바일 UI 여백 및 패딩 최적화
 st.markdown("""
     <style>
         .block-container { padding-top: 1.0rem !important; padding-bottom: 2.0rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -44,12 +43,24 @@ start_time = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
 end_time = now_kst.replace(hour=15, minute=30, second=0, microsecond=0)
 is_market_open = is_weekday and (start_time <= now_kst <= end_time)
 
-# --- 1. 모바일 헤더 ---
+# --- 1. 텔레그램 전송 함수 ---
+def send_telegram_msg(message):
+    token = os.getenv("TELEGRAM_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if token and chat_id:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        try:
+            requests.post(url, json=payload, timeout=5)
+        except Exception:
+            pass
+
+# --- 2. 헤더 ---
 status_badge = "🟢 **LIVE**" if is_market_open else "⚪ **장 마감**"
 st.markdown(f"### 📈 AX Stock ({today_str}) | {status_badge}")
 st.divider()
 
-# --- 2. API 연결 ---
+# --- 3. API 연결 ---
 app_key = os.getenv("KIS_APP_KEY", "").strip()
 app_secret = os.getenv("KIS_APP_SECRET", "").strip()
 URL_BASE = "https://openapi.koreainvestment.com:9443"
@@ -107,7 +118,7 @@ def get_kis_stock_daily_real(code, key, secret, token):
     except Exception as e:
         return False, None, str(e)
 
-# --- 3. 세션 관리 ---
+# --- 4. 세션 관리 ---
 if "interest_stocks" not in st.session_state:
     st.session_state.interest_stocks = {
         "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740",
@@ -117,9 +128,12 @@ if "interest_stocks" not in st.session_state:
 if "display_stocks" not in st.session_state:
     st.session_state.display_stocks = ["삼성전자", "SK하이닉스", "한화엔진", "삼양식품", "에코프로", "현대차"]
 
+if "alert_sent" not in st.session_state:
+    st.session_state.alert_sent = {}
+
 is_auth_ok, token, auth_msg = get_access_token_cached(app_key, app_secret)
 
-# --- 4. 사이드바 (설정 메뉴) ---
+# --- 5. 사이드바 ---
 st.sidebar.header("🔍 종목 검색 & 관리")
 search_query = st.sidebar.text_input("종목명 또는 코드 입력")
 
@@ -142,21 +156,24 @@ if search_query:
 st.sidebar.divider()
 strategy = st.sidebar.selectbox("📊 차트 분석 기법", ["tom3rd (정밀 모멘텀)", "이동평균선 (MA Cross)", "RSI 과매도/과매수", "볼린저 밴드"])
 
-# --- 5. 메인 대시보드 (모바일 1열 세로 스크롤) ---
+# 테스트용 텔레그램 알림 버튼
+if st.sidebar.button("🔔 텔레그램 연동 테스트"):
+    send_telegram_msg("🚨 [AX Stock Test] 텔레그램 알림 연동이 정상 완료되었습니다!")
+    st.sidebar.success("테스트 메시지를 발송했습니다!")
+
+# --- 6. 대시보드 ---
 if not app_key or not app_secret:
     st.error("⚠️ KIS_APP_KEY 설정 필요")
 elif not is_auth_ok:
     st.error(f"🔑 실전 API 인증 실패: {auth_msg}")
 else:
     if not st.session_state.display_stocks:
-        st.info("👈 왼쪽 상단 > 메뉴를 눌러 화면에 표시할 종목을 추가해 주세요.")
+        st.info("👈 왼쪽 상단 메뉴에서 화면 표시 종목을 추가해 주세요.")
     else:
-        # 모바일용 1열 루프
         for stock_name in list(st.session_state.display_stocks):
             code = st.session_state.interest_stocks[stock_name]
             is_data_ok, df, data_msg = get_kis_stock_daily_real(code, app_key, app_secret, token)
             
-            # 종목 타이틀 및 모바일 제거 버튼
             col_t1, col_t2 = st.columns([4, 1])
             col_t1.markdown(f"#### 📌 {stock_name} (`{code}`)")
             if col_t2.button("❌", key=f"mob_del_{code}"):
@@ -167,7 +184,6 @@ else:
                 st.error(f"데이터 로드 실패: {data_msg}")
                 continue
 
-            # 지표 계산
             df['Buy_Signal'] = np.nan
             df['Sell_Signal'] = np.nan
             df['MA5'] = df['Close'].rolling(window=5).mean()
@@ -201,8 +217,20 @@ else:
             df.loc[sell_cond, 'Sell_Signal'] = df['High'] * 1.02
 
             latest = df.iloc[-1]
+            latest_date = latest.name.strftime("%Y-%m-%d")
             
-            # 모바일 3칸 핵심 수치 카드
+            # --- 실시간 텔레그램 알림 발송 조건 판단 ---
+            alert_key = f"{code}_{latest_date}_{strategy}"
+            if alert_key not in st.session_state.alert_sent:
+                if pd.notna(latest['Buy_Signal']):
+                    msg = f"🟢 *[매수 신호 포착]*\n• 종목: {stock_name} ({code})\n• 현재가: {int(latest['Close']):,}원\n• 전략: {strategy}\n• 날짜: {latest_date}"
+                    send_telegram_msg(msg)
+                    st.session_state.alert_sent[alert_key] = "BUY"
+                elif pd.notna(latest['Sell_Signal']):
+                    msg = f"🔴 *[손절/축소 신호 포착]*\n• 종목: {stock_name} ({code})\n• 현재가: {int(latest['Close']):,}원\n• 전략: {strategy}\n• 날짜: {latest_date}"
+                    send_telegram_msg(msg)
+                    st.session_state.alert_sent[alert_key] = "SELL"
+
             m1, m2, m3 = st.columns(3)
             m1.metric("현재가", f"{int(latest['Close']):,}원")
             m2.metric("RSI", f"{latest['RSI']:.1f}" if pd.notna(latest['RSI']) else "-")
@@ -214,7 +242,6 @@ else:
             else:
                 m3.markdown("⚪ **관망**")
 
-            # 모바일 가로폭 감안한 차트 (높이 280px)
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="주가"), row=1, col=1)
             
