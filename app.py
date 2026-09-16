@@ -26,13 +26,13 @@ st.set_page_config(page_title="AX Stock App", layout="wide", initial_sidebar_sta
 st.markdown("""
     <style>
         .block-container { padding-top: 0.8rem !important; padding-bottom: 2.0rem; padding-left: 0.8rem; padding-right: 0.8rem; }
-        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; overflow-x: auto; white-space: nowrap; }
         .stTabs [data-baseweb="tab"] {
-            padding: 6px 16px !important;
+            padding: 6px 14px !important;
             border-radius: 16px !important;
             background-color: #F2F4F6 !important;
             font-weight: 600 !important;
-            font-size: 0.9rem !important;
+            font-size: 0.85rem !important;
         }
         .stTabs [aria-selected="true"] {
             background-color: #3182F6 !important;
@@ -121,7 +121,7 @@ def get_kis_stock_daily_real(code, key, secret, token):
     except Exception as e:
         return False, None, str(e)
 
-# --- 세션 관리 ---
+# --- 세션 초기화 ---
 if "interest_stocks" not in st.session_state:
     st.session_state.interest_stocks = {
         "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740",
@@ -134,27 +134,48 @@ if "display_stocks" not in st.session_state:
 if "alert_sent" not in st.session_state:
     st.session_state.alert_sent = {}
 
+# 종목 추가 전용 공통 함수
+def add_target_stock(name, code):
+    name = name.strip()
+    code = code.strip()
+    if name and code:
+        st.session_state.interest_stocks[name] = code
+        if name not in st.session_state.display_stocks:
+            st.session_state.display_stocks.append(name)
+            st.toast(f"✅ '{name}' 종목 탭이 추가되었습니다!", icon="🎉")
+        else:
+            st.toast(f"ℹ️ '{name}' 종목은 이미 탭에 존재합니다.", icon="💡")
+
 is_auth_ok, token, auth_msg = get_access_token_cached(app_key, app_secret)
 
 # --- 사이드바 ---
 st.sidebar.header("🔍 종목 추가 및 관리")
-search_query = st.sidebar.text_input("종목명/코드 입력")
+search_query = st.sidebar.text_input("종목명 또는 6자리 코드 입력")
 
 if search_query:
     fallback_db = {
         "고영": "053670", "카카오": "035720", "네이버": "035420", "NAVER": "035420",
         "삼성전자": "005930", "SK하이닉스": "000660", "한화엔진": "082740", "삼양식품": "003230",
-        "에코프로": "086520", "현대차": "005380", "기아": "000270", "알테오젠": "196170"
+        "에코프로": "086520", "현대차": "005380", "기아": "000270", "알테오젠": "196170",
+        "카카오뱅크": "323410", "크래프톤": "259960", "셀트리온": "068270", "POSCO홀딩스": "005490"
     }
-    matches = [(k, v) for k, v in fallback_db.items() if search_query.upper() in k.upper()]
-    for r_name, r_code in matches:
-        col_s1, col_s2 = st.sidebar.columns([3, 1])
-        col_s1.write(f"{r_name} ({r_code})")
-        if col_s2.button("➕", key=f"add_{r_code}"):
-            st.session_state.interest_stocks[r_name] = r_code
-            if r_name not in st.session_state.display_stocks:
-                st.session_state.display_stocks.append(r_name)
-            st.rerun()
+    matches = [(k, v) for k, v in fallback_db.items() if search_query.upper() in k.upper() or search_query in v]
+    
+    if matches:
+        for r_name, r_code in matches:
+            col_s1, col_s2 = st.sidebar.columns([3, 1])
+            col_s1.write(f"{r_name} ({r_code})")
+            if col_s2.button("➕", key=f"side_add_{r_code}"):
+                add_target_stock(r_name, r_code)
+                st.rerun()
+    else:
+        # DB에 없어도 코드(6자리) 직접 등록 허용
+        if len(search_query) == 6 and search_query.isdigit():
+            if st.sidebar.button(f"➕ 코드 '{search_query}' 직접 추가", key="add_custom_code"):
+                add_target_stock(f"종목_{search_query}", search_query)
+                st.rerun()
+        else:
+            st.sidebar.info("검색 결과가 없습니다. 6자리 코드를 입력하면 직접 추가가 가능합니다.")
 
 st.sidebar.divider()
 strategy = st.sidebar.selectbox("📊 차트 분석 기법", ["tom3rd (정밀 모멘텀)", "이동평균선 (MA Cross)", "RSI 과매도/과매수", "볼린저 밴드"])
@@ -163,14 +184,14 @@ if st.sidebar.button("🔔 텔레그램 연동 테스트"):
     send_telegram_msg("🚨 [AX Stock] 텔레그램 테스트 메시지입니다.")
     st.sidebar.success("발송 완료!")
 
-# --- 메인 화면 (토스증권 UI 스타일) ---
+# --- 메인 화면 ---
 if not app_key or not app_secret or not is_auth_ok:
     st.error("🔑 한투 API 연동 상태를 확인해 주세요.")
 else:
     if not st.session_state.display_stocks:
         st.info("👈 사이드바 메뉴에서 관심 종목을 추가해 주세요.")
     else:
-        # 상단 종목 이동 탭 (토스 스타일)
+        # 상단 종목 이동 탭
         tabs = st.tabs(st.session_state.display_stocks)
 
         for i, stock_name in enumerate(st.session_state.display_stocks):
@@ -231,7 +252,7 @@ else:
                         send_telegram_msg(f"🔴 *[손절 신호]* {stock_name} ({int(latest['Close']):,}원)")
                         st.session_state.alert_sent[alert_key] = "SELL"
 
-                # --- 1. 토스 스타일 타이틀 & 현재가 헤더 ---
+                # --- 토스 스타일 타이틀 & 현재가 헤더 ---
                 c_title, c_del = st.columns([5, 1])
                 c_title.markdown(f"**{stock_name}** `{code}`")
                 if c_del.button("삭제", key=f"toss_del_{code}"):
@@ -240,7 +261,6 @@ else:
 
                 st.markdown(f"<div class='price-large'>{int(latest['Close']):,}원</div>", unsafe_allow_html=True)
 
-                # 전일 대비 변동금액 / 등락률
                 if diff_price >= 0:
                     st.markdown(f"<div class='diff-red'>어제보다 +{int(diff_price):,}원 (+{diff_rate:.2f}%)</div>", unsafe_allow_html=True)
                 else:
@@ -248,7 +268,6 @@ else:
 
                 st.write("")
                 
-                # 매매 신호 배지
                 if pd.notna(latest['Buy_Signal']):
                     st.markdown("<span class='signal-badge-buy'>🟢 AI 매수 타점 포착</span>", unsafe_allow_html=True)
                 elif pd.notna(latest['Sell_Signal']):
@@ -258,13 +277,12 @@ else:
 
                 st.write("")
 
-                # --- 2. 라인 / 캔들 차트 (토스 스타일) ---
+                # --- 라인 차트 ---
                 max_price = df['High'].max()
                 min_price = df['Low'].min()
 
                 fig = go.Figure()
 
-                # 주가 추세 라인
                 line_color = '#F04452' if diff_price >= 0 else '#3182F6'
                 fig.add_trace(go.Scatter(
                     x=df.index, y=df['Close'],
@@ -273,7 +291,6 @@ else:
                     name="종가"
                 ))
 
-                # 매수/매도 타점 마커
                 fig.add_trace(go.Scatter(
                     x=df.index, y=df['Buy_Signal'], mode='markers',
                     marker=dict(symbol='circle', size=10, color='#F04452'), name='매수'
@@ -283,7 +300,6 @@ else:
                     marker=dict(symbol='circle', size=10, color='#3182F6'), name='매도'
                 ))
 
-                # 최고가/최저가 텍스트 주석
                 fig.add_annotation(
                     x=df['High'].idxmax(), y=max_price,
                     text=f"최고 {int(max_price):,}원", showarrow=True, arrowhead=1, arrowcolor="#F04452", font=dict(color="#F04452", size=10)
