@@ -14,10 +14,10 @@ from plotly.subplots import make_subplots
 import streamlit as st
 from dotenv import load_dotenv
 
-# .env 파일에서 환경변수 로드
+# .env 로드
 load_dotenv()
 
-# SSL 경고 및 검사 비활성화
+# SSL 보안 설정
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 os.environ['CURL_CA_BUNDLE'] = ''
@@ -25,7 +25,7 @@ os.environ['PYTHONHTTPSVERIFY'] = '0'
 
 st.set_page_config(page_title="AX Stock Intelligence", layout="wide")
 
-# CSS 레이아웃 커스텀
+# CSS 레이아웃 최적화
 st.markdown("""
     <style>
         .block-container { padding-top: 2.2rem !important; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem; }
@@ -35,37 +35,51 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 환경 변수 로드
-KIS_APP_KEY = os.getenv("KIS_APP_KEY", "").strip()
-KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "").strip()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-KIS_CANO = os.getenv("KIS_CANO", "").strip()
-KIS_ACNT_PRDT_CD = os.getenv("KIS_ACNT_PRDT_CD", "01").strip()
+# --- 환경변수 / Secrets 안전하게 로드하는 함수 ---
+def get_env_var(key, default=""):
+    # 1. Streamlit Secrets 확인
+    if key in st.secrets:
+        return str(st.secrets[key]).strip()
+    # 2. os.environ 확인 (.env)
+    val = os.getenv(key, default)
+    return str(val).strip() if val else default
+
+KIS_APP_KEY = get_env_var("KIS_APP_KEY")
+KIS_APP_SECRET = get_env_var("KIS_APP_SECRET")
+TELEGRAM_TOKEN = get_env_var("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = get_env_var("TELEGRAM_CHAT_ID")
+KIS_CANO = get_env_var("KIS_CANO")
+KIS_ACNT_PRDT_CD = get_env_var("KIS_ACNT_PRDT_CD", "01")
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 
-# --- 1. KIS API 토큰 캐싱 및 통신 ---
-@st.cache_data(ttl=86000)
-def get_access_token():
+# --- KIS API 토큰 발급 ---
+@st.cache_data(ttl=3600)
+def get_access_token(app_key, app_secret):
+    if not app_key or not app_secret:
+        return None, "App Key 또는 App Secret 값이 비어있습니다."
+        
     url = f"{URL_BASE}/oauth2/tokenP"
     headers = {"content-type": "application/json; charset=UTF-8"}
     body = {
         "grant_type": "client_credentials",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET
+        "appkey": app_key,
+        "appsecret": app_secret
     }
     try:
         res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10, verify=False)
         res_json = res.json()
-        return res_json.get("access_token", None)
-    except Exception:
-        return None
+        if "access_token" in res_json:
+            return res_json["access_token"], "성공"
+        else:
+            return None, res_json.get("msg1", str(res_json))
+    except Exception as e:
+        return None, f"통신 에러: {str(e)}"
 
 def execute_kis_buy_order(code, qty=1):
-    token = get_access_token()
+    token, err_msg = get_access_token(KIS_APP_KEY, KIS_APP_SECRET)
     if not token:
-        return False, "인증 토큰 발급 실패"
+        return False, f"인증 토큰 발급 실패: {err_msg}"
 
     url = f"{URL_BASE}/uapi/domestic-stock/v1/trading/order-cash"
     headers = {
@@ -94,7 +108,7 @@ def execute_kis_buy_order(code, qty=1):
     except Exception as e:
         return False, f"통신 에러: {str(e)}"
 
-# --- 2. 텔레그램 인라인 버튼 발송 ---
+# --- 텔레그램 인라인 버튼 발송 ---
 def send_telegram_inline_buy_signal(stock_name, code, price):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -128,7 +142,7 @@ def send_telegram_inline_buy_signal(stock_name, code, price):
     except Exception:
         return False
 
-# --- 3. 텔레그램 백그라운드 스레드 ---
+# --- 텔레그램 백그라운드 리스너 ---
 def telegram_listener_thread():
     offset = 0
     while True:
@@ -176,7 +190,7 @@ if "telegram_thread_started" not in st.session_state:
     t = threading.Thread(target=telegram_listener_thread, daemon=True)
     t.start()
 
-# --- 4. Streamlit UI 대시보드 ---
+# --- 대시보드 메인 UI ---
 kst = pytz.timezone('Asia/Seoul')
 now_kst = datetime.datetime.now(kst)
 today_str = now_kst.strftime("%Y-%m-%d")
@@ -190,13 +204,12 @@ status_badge = "🟢 **LIVE (실전 장 중)**" if is_market_open else "⚪ **�
 st.subheader(f"📈 AX Stock Intelligence ({today_str}) | {status_badge}")
 st.divider()
 
-# 한투 초당 호출 제한 방지 적용 (time.sleep)
-@st.cache_data(ttl=60)
+# 한투 시세 데이터 수집
 def get_kis_stock_daily_real(code):
-    time.sleep(0.5)  # API 제한 우회용 0.5초 대기
-    token = get_access_token()
+    time.sleep(0.4)
+    token, err_msg = get_access_token(KIS_APP_KEY, KIS_APP_SECRET)
     if not token:
-        return False, None, "인증 토큰 발급 실패"
+        return False, None, f"인증 토큰 발급 실패: {err_msg}"
     
     url = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
     headers = {
