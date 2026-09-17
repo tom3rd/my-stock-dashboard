@@ -40,12 +40,13 @@ KIS_APP_KEY = os.getenv("KIS_APP_KEY", "").strip()
 KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "").strip()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-KIS_CANO = os.getenv("KIS_CANO", "").strip()  # 계좌번호 앞 8자리
+KIS_CANO = os.getenv("KIS_CANO", "").strip()
 KIS_ACNT_PRDT_CD = os.getenv("KIS_ACNT_PRDT_CD", "01").strip()
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 
-# --- 1. KIS API 실전 통신 함수 ---
+# --- 1. KIS API 토큰 캐싱 및 통신 ---
+@st.cache_data(ttl=86000)
 def get_access_token():
     url = f"{URL_BASE}/oauth2/tokenP"
     headers = {"content-type": "application/json; charset=UTF-8"}
@@ -62,7 +63,6 @@ def get_access_token():
         return None
 
 def execute_kis_buy_order(code, qty=1):
-    """한국투자증권 실전 시장가 매수 주문"""
     token = get_access_token()
     if not token:
         return False, "인증 토큰 발급 실패"
@@ -73,14 +73,14 @@ def execute_kis_buy_order(code, qty=1):
         "authorization": f"Bearer {token}",
         "appkey": KIS_APP_KEY,
         "appsecret": KIS_APP_SECRET,
-        "tr_id": "TTTC0802U",  # 실전 현금 매수 주문 TR
+        "tr_id": "TTTC0802U",
         "custtype": "P"
     }
     body = {
         "CANO": KIS_CANO,
         "ACNT_PRDT_CD": KIS_ACNT_PRDT_CD,
         "PDNO": code,
-        "ORD_DVSN": "01",  # 시장가
+        "ORD_DVSN": "01",
         "ORD_QTY": str(qty),
         "ORD_PRC": "0"
     }
@@ -94,7 +94,7 @@ def execute_kis_buy_order(code, qty=1):
     except Exception as e:
         return False, f"통신 에러: {str(e)}"
 
-# --- 2. 텔레그램 YES/NO 인라인 버튼 발송 함수 ---
+# --- 2. 텔레그램 인라인 버튼 발송 ---
 def send_telegram_inline_buy_signal(stock_name, code, price):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -128,7 +128,7 @@ def send_telegram_inline_buy_signal(stock_name, code, price):
     except Exception:
         return False
 
-# --- 3. 텔레그램 백그라운드 리스너 (YES/NO 클릭 감지 및 실행) ---
+# --- 3. 텔레그램 백그라운드 스레드 ---
 def telegram_listener_thread():
     offset = 0
     while True:
@@ -150,14 +150,10 @@ def telegram_listener_thread():
                     
                     if data.startswith("BUY_"):
                         _, code, name = data.split("_")
-                        
-                        # 버튼 뱅글뱅글 팝업 해제 응답
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery", 
-                                      json={"callback_query_id": callback_id, "text": "🚀 매수 주문을 발주 중입니다..."})
+                                      json={"callback_query_id": callback_id, "text": "🚀 매수 주문 발주 중..."})
                         
-                        # 한투 API 매수 주문 실행
                         success, msg = execute_kis_buy_order(code, qty=1)
-                        
                         result_msg = (
                             f"🟢 **[{name}] 1주 매수 완료**\n결과: {msg}" if success 
                             else f"🔴 **[{name}] 매수 주문 실패**\n사유: {msg}"
@@ -168,20 +164,19 @@ def telegram_listener_thread():
                     elif data.startswith("CANCEL_"):
                         name = data.split("_")[1]
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery", 
-                                      json={"callback_query_id": callback_id, "text": "매수 주문이 취소되었습니다."})
+                                      json={"callback_query_id": callback_id, "text": "매수 주문 취소됨"})
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
-                                      json={"chat_id": chat_id, "text": f"⚪ [{name}] 매수 주문 요청이 취소되었습니다."})
+                                      json={"chat_id": chat_id, "text": f"⚪ [{name}] 매수 주문이 취소되었습니다."})
         except Exception:
             time.sleep(3)
         time.sleep(1)
 
-# 백그라운드 스레드 단 1개만 실행
 if "telegram_thread_started" not in st.session_state:
     st.session_state.telegram_thread_started = True
     t = threading.Thread(target=telegram_listener_thread, daemon=True)
     t.start()
 
-# --- 4. Streamlit 메인 UI 대시보드 ---
+# --- 4. Streamlit UI 대시보드 ---
 kst = pytz.timezone('Asia/Seoul')
 now_kst = datetime.datetime.now(kst)
 today_str = now_kst.strftime("%Y-%m-%d")
@@ -195,9 +190,10 @@ status_badge = "🟢 **LIVE (실전 장 중)**" if is_market_open else "⚪ **�
 st.subheader(f"📈 AX Stock Intelligence ({today_str}) | {status_badge}")
 st.divider()
 
-# 데이터 로드 함수
+# 한투 초당 호출 제한 방지 적용 (time.sleep)
 @st.cache_data(ttl=60)
 def get_kis_stock_daily_real(code):
+    time.sleep(0.5)  # API 제한 우회용 0.5초 대기
     token = get_access_token()
     if not token:
         return False, None, "인증 토큰 발급 실패"
@@ -235,11 +231,10 @@ def get_kis_stock_daily_real(code):
             df.set_index('Date', inplace=True)
             return True, df, "성공"
         else:
-            return False, None, "데이터 없음"
+            return False, None, res_json.get("msg1", "데이터 없음")
     except Exception as e:
         return False, None, str(e)
 
-# 세션 관리
 if "my_watchlist" not in st.session_state:
     st.session_state.my_watchlist = {
         "삼성전자": "005930",
@@ -264,11 +259,10 @@ strategy = st.sidebar.selectbox(
 if st.sidebar.button("🔔 텔레그램 YES/NO 알림 테스트"):
     success = send_telegram_inline_buy_signal("삼성전자", "005930", 73500)
     if success:
-        st.sidebar.success("텔레그램으로 YES/NO 버튼 메시지 발송 완료!")
+        st.sidebar.success("텔레그램 메시지 발송 완료!")
     else:
-        st.sidebar.error("텔레그램 메시지 발송 실패")
+        st.sidebar.error("텔레그램 발송 실패")
 
-# 메인 그리드 렌더링
 if selected_stocks:
     num_stocks = len(selected_stocks)
     cols_per_row = 3 if num_stocks > 2 else num_stocks
@@ -281,7 +275,7 @@ if selected_stocks:
         
         with col_target:
             if not is_ok or df is None:
-                st.error(f"{stock_name} 데이터 로드 실패")
+                st.error(f"{stock_name} 데이터 로드 실패: {msg}")
                 continue
 
             df['MA50'] = df['Close'].rolling(window=50).mean()
